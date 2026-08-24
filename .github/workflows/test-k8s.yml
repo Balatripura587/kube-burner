@@ -10,12 +10,28 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tags: ${{ steps.fetch-versions.outputs.tags }}
+      kind-version: ${{ steps.fetch-versions.outputs.kind-version }}
     steps:
-      - name: Fetch latest patch version for the latest 3 minor versions of kindest/node
+      - name: Fetch latest kind and latest 3 kindest/node patch versions
         id: fetch-versions
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          # kindest/node images are built per kind release. Pinning an old kind
+          # binary (e.g. v0.19.0) against current node tags breaks a matrix cell.
+          # Use the GitHub API (not gh) so this also runs under act, which has no gh CLI.
+          kind_version=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/kubernetes-sigs/kind/releases/latest \
+            | jq -r '.tag_name')
+          echo "Latest kind release: ${kind_version}"
+          echo "kind-version=${kind_version}" >> "$GITHUB_OUTPUT"
+
           # Fetch tags from Docker Hub API
-          all_tags=$(curl -s "https://hub.docker.com/v2/repositories/kindest/node/tags/?page_size=100" | jq -r '.results[].name')
+          all_tags=$(curl -fsSL "https://hub.docker.com/v2/repositories/kindest/node/tags/?page_size=100" | jq -r '.results[].name')
 
           # Filter semantic versioning tags
           semver_tags=$(echo "$all_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
@@ -36,6 +52,7 @@ jobs:
     needs: fetch-latest-kind-node-tags
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         k8s-version: ${{ fromJson(needs.fetch-latest-kind-node-tags.outputs.tags) }}
     steps:
@@ -90,7 +107,7 @@ jobs:
       env:
         TERM: linux
         GH_TOKEN: ${{ github.token }}
-        KIND_VERSION: v0.19.0
+        KIND_VERSION: ${{ needs.fetch-latest-kind-node-tags.outputs.kind-version }}
         K8S_VERSION: ${{matrix.k8s-version}}
         PERFSCALE_PROD_ES_SERVER: ${{ secrets.PERFSCALE_PROD_ES_SERVER }}
         TEST_BINARY: /usr/bin/kube-burner
